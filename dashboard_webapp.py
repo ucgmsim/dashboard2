@@ -269,4 +269,4 @@ def render_allocation_data(selected_allocation_id):
 
 
 if __name__ == "__main__":
-    app.run_server(host="0.0.0.0", port=5092, debug=True)
+    app.run_server(host="0.0.0.0", port=5092, debug=False)
