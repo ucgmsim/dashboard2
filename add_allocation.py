@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from DashboardDB import DashboardDB
-
+from constants import nesi_db_path
 def main():
     parser = argparse.ArgumentParser(description="Insert a new allocation record.")
     parser.add_argument("--project_id", type=str, required=True, help="Project ID (e.g., nesi00213)")
@@ -11,8 +11,7 @@ def main():
     parser.add_argument("--machine", type=str, default="hpc", help="HPC machine name (default: hpc)")
     args = parser.parse_args()
 
-    db_path = "/home/baes/dashboard2/db/dashboard.db"
-    db = DashboardDB(db_path)
+    db = DashboardDB(nesi_db_path)
     db.insert_allocation(project_id=args.project_id, start=args.start, end=args.end, hours=args.hours, machine=args.machine)
     print(f"✅ Allocation inserted for project {args.project_id} from {args.start} to {args.end} with {args.hours} hours.")
 

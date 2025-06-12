@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from dashboard_constant import HPC
 from DataCollector import DataCollector
 from DashboardDB import DashboardDB
+from constants import nesi_db_path
 
 TIME_FORMAT_DATEONLY = "%Y-%m-%d"
 
@@ -39,13 +40,12 @@ def main():
     )
 
     args = parser.parse_args()
-    db_path = "/home/baes/dashboard2/db/dashboard.db"
 
     if args.reset:
         import os
-        if os.path.exists(db_path):
-            os.remove(db_path)
-        DashboardDB.create_db(db_path)
+        if os.path.exists(nesi_db_path):
+            os.remove(nesi_db_path)
+        DashboardDB.create_db(nesi_db_path)
 
     else:
         collector = DataCollector(date=args.date, debug=args.debug)

@@ -3,12 +3,13 @@ from typing import List, Union, Iterable
 import subprocess
 from dashboard_constant import HPC
 from DashboardDB import DashboardDB, UserChEntry, QuotaEntry
+from constants import nesi_db_path
 
 class DataCollector:
     def __init__(self, date: str,  debug: bool = False):
         self.hpc = HPC.hpc
         self.date = datetime.strptime(date, "%Y-%m-%d").date()
-        self.dashboard_db = DashboardDB("/home/baes/dashboard2/db/dashboard.db")
+        self.dashboard_db = DashboardDB(nesi_db_path)
         self.project_ids = self.dashboard_db.get_all_project_ids()
         self.users = self.dashboard_db.get_all_users()
         self.debug = debug
@@ -19,6 +20,7 @@ class DataCollector:
         if self.date == datetime.today().date():
             self.collect_squeue()
             self.collect_quota()
+            self.collect_fairshare()
 
         if upload:
             self.upload_db()
@@ -154,8 +156,52 @@ class DataCollector:
                     continue
         self.dashboard_db.update_daily_quota(entries, self.hpc)
 
+    def collect_fairshare(self):
+        for project_id in self.project_ids:
+            fairshare_cmd = f"sshare --json -A {project_id}"
+            lines = self.run_cmd(fairshare_cmd)
+            json_text = "\n".join(lines)
+
+            try:
+                import json
+                data = json.loads(json_text)
+                entries = data.get("shares", {}).get("shares", [])
+                assoc_entry = next((e for e in entries if "ASSOCIATION" in e.get("type", []) and e.get("name") == project_id), None)
+
+                if assoc_entry:
+                    fairshare_score = assoc_entry.get("effective_usage", {}).get("number", None)
+
+                    # Extract CPU and MEM usage
+                    usage_list = assoc_entry.get("tres", {}).get("usage", [])
+                    cpu_usage = next((item["value"] for item in usage_list if item["name"] == "cpu"), 0.0)
+                    mem_usage = next((item["value"] for item in usage_list if item["name"] == "mem"), 0.0)
+
+                    if self.debug:
+                        print(f"[DEBUG] FairShare for {project_id}: fairshare={fairshare_score}, cpu={cpu_usage}, mem={mem_usage}")
+
+                    # Now insert this into your DB (you will need to create this method in DashboardDB):
+                    cpu_core_hours = cpu_usage / 3600
+                    mem_gb_hours = mem_usage / (1024**3) / 3600
+
+                    self.dashboard_db.update_fairshare_status(
+                        hpc=self.hpc,
+                        project_id=project_id,
+                        day=self.date,
+                        fairshare_score=fairshare_score,
+                        cpu_core_hours=cpu_core_hours,
+                        mem_gb_hours=mem_gb_hours,
+                    )
+                else:
+                    if self.debug:
+                        print(f"[WARN] ASSOCIATION entry not found for project {project_id} in sshare output.")
+
+            except Exception as e:
+                if self.debug:
+                    print(f"[ERROR] Failed to parse sshare output for project {project_id}: {e}")
+
+
     def upload_db(self):
         dropbox_path = "dropbox:/QuakeCoRE/Public/dashboard"
-        local_db = "/home/baes/dashboard2/db/dashboard.db"
+        local_db = nesi_db_path
         rclone_cmd = f"rclone copy {local_db} {dropbox_path} --progress"
         self.run_cmd(rclone_cmd)

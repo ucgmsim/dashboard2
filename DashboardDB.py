@@ -177,6 +177,15 @@ class DashboardDB:
                     ),
                 )
 
+    def update_fairshare_status(self, hpc, project_id, day, fairshare_score, cpu_core_hours, mem_gb_hours):
+        update_time = datetime.utcnow()
+        with self.get_cursor(self.db_file) as cursor:
+            cursor.execute("""
+                INSERT OR REPLACE INTO fairshare_status
+                (machine, day, project_id, fairshare_score, cpu_core_hours, mem_gb_hours, update_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (hpc.value, day.strftime("%Y-%m-%d"), project_id, fairshare_score, cpu_core_hours, mem_gb_hours, update_time))
+
 
     def ensure_user_exists(self, username: str, project_id: str):
         with self.get_cursor(self.db_file) as cursor:
