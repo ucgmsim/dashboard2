@@ -1,272 +1,281 @@
-import os
 import dash
 from dash import dcc, html, Input, Output, dash_table
 import plotly.graph_objs as go
 import pandas as pd
 import sqlite3
 from datetime import datetime, timezone
+import os
 
 EXTERNAL_STYLESHEETS = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "db", "dashboard.db")
 
-def get_all_allocations(db_path):
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row # Access columns by name
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT id, project_id, start, end FROM allocation ORDER BY start DESC, id DESC")
-        allocations = cursor.fetchall()
-        options = [{'label': f"{row['project_id']} ({row['start']} - {row['end']})", 'value': row['id']} for row in allocations]
-    except sqlite3.OperationalError as e:
-        print(f"Database error fetching all allocations: {e}")
-        options = []
-    conn.close()
-    return options
+# === DB Helpers ===
 
-def get_allocation_details(db_path, allocation_id=None):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    result = None
-    try:
-        if allocation_id is not None:
-            cursor.execute("SELECT id, project_id, hours, start, end FROM allocation WHERE id = ?", (allocation_id,))
-        else: # Get latest
-            cursor.execute("SELECT id, project_id, hours, start, end FROM allocation ORDER BY start DESC, id DESC LIMIT 1")
-        row = cursor.fetchone()
-        if row:
-            result = {
-                "id": row[0],
-                "project_id": row[1],
-                "hours": row[2],
-                "start_date": row[3],
-                "end_date": row[4]
-            }
-    except sqlite3.OperationalError as e:
-        print(f"Database error fetching allocation details: {e}")
-        # Fallthrough to return None
+def get_allocations():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query("""
+        SELECT project_id, start, end, hours
+        FROM allocation
+        ORDER BY project_id, start
+    """, conn)
+    conn.close()
+    return df
+
+def get_latest_fairshare(project_id):
+    conn = sqlite3.connect(DB_PATH)
+    row = pd.read_sql_query(f"""
+        SELECT fairshare_score, cpu_core_hours, mem_gb_hours
+        FROM fairshare_status
+        WHERE project_id = ?
+        ORDER BY day DESC
+        LIMIT 1
+    """, conn, params=(project_id,)).squeeze()
+    conn.close()
+
+    if row.empty:
+        return (None, None, None)
+    else:
+        return row["fairshare_score"], row["cpu_core_hours"], row["mem_gb_hours"]
+
+def interpret_fairshare(fairshare_score):
+    if fairshare_score is None:
+        return "(unknown)"
+    if fairshare_score <= 0.05:
+        return "(Excellent priority)"
+    elif fairshare_score <= 0.10:
+        return "(High priority)"
+    elif fairshare_score <= 0.25:
+        return "(Normal priority)"
+    elif fairshare_score <= 0.50:
+        return "(Low priority)"
+    else:
+        return "(Very low priority)"
+
+def get_daily_user_usage(project_id, alloc_start, alloc_end):
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(f"""
+        SELECT day, username, SUM(core_hours_used) AS core_hours
+        FROM user_core_hours
+        WHERE project_id = ?
+        AND day BETWEEN ? AND ?
+        GROUP BY day, username
+        ORDER BY day, username
+    """, conn, params=(project_id, alloc_start, alloc_end))
+    conn.close()
+    return df
+
+def get_user_total_usage(project_id, alloc_start, alloc_end):
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(f"""
+        SELECT username, SUM(core_hours_used) AS total_usage
+        FROM user_core_hours
+        WHERE project_id = ?
+        AND day BETWEEN ? AND ?
+        GROUP BY username
+        ORDER BY total_usage DESC
+    """, conn, params=(project_id, alloc_start, alloc_end))
+    conn.close()
+    return df
+
+def get_alloc_used_sum():
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(f"""
+        SELECT project_id, day, SUM(core_hours_used) AS core_hours
+        FROM user_core_hours
+        GROUP BY project_id, day
+    """, conn)
+
+    # Now sum per allocation window
+    alloc_df = get_allocations()
+
+    result = {}
+    for _, row in alloc_df.iterrows():
+        mask = (df["project_id"] == row["project_id"]) & \
+               (df["day"] >= row["start"]) & (df["day"] <= row["end"])
+        used_sum = df[mask]["core_hours"].sum()
+        result[(row["project_id"], row["start"], row["end"])] = used_sum
+
     conn.close()
     return result
 
-def get_data(db_path, start_date=None, end_date=None):
-    conn = sqlite3.connect(db_path)
-    params_daily = []
-    params_totals = []
-    
-    daily_query = """
-        SELECT day, username, SUM(core_hours_used) as usage
-        FROM user_core_hours
-    """
-    user_totals_query = """
-        SELECT username, SUM(core_hours_used) as total_usage
-        FROM user_core_hours
-    """
+# === File mod time ===
+mod_time_ts = os.path.getmtime(DB_PATH)
+mod_time = datetime.utcfromtimestamp(mod_time_ts).replace(tzinfo=timezone.utc)
+mod_time_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
+age_hours = (datetime.now(timezone.utc) - mod_time).total_seconds() / 3600
 
-    where_clauses = []
-    if start_date:
-        where_clauses.append("day >= ?")
-        params_daily.append(start_date)
-        params_totals.append(start_date)
-    if end_date:
-        where_clauses.append("day <= ?")
-        params_daily.append(end_date)
-        params_totals.append(end_date)
+# === Load Allocation Info ===
+alloc_df = get_allocations()
+project_ids = alloc_df["project_id"].unique().tolist()
 
-    if where_clauses:
-        filter_condition = " WHERE " + " AND ".join(where_clauses)
-        daily_query += filter_condition
-        user_totals_query += filter_condition
-    
-    daily_query += " GROUP BY day, username ORDER BY day"
-    user_totals_query += " GROUP BY username ORDER BY total_usage DESC"
+# Dropdown options + default latest per project
+dropdown_options = {}
+latest_alloc = {}
 
-    try:
-        daily = pd.read_sql_query(daily_query, conn, params=params_daily if params_daily else None)
-        user_totals = pd.read_sql_query(user_totals_query, conn, params=params_totals if params_totals else None)
-    except pd.io.sql.DatabaseError as e:
-        print(f"Database error in get_data: {e}. Returning empty DataFrames.")
-        daily = pd.DataFrame(columns=['day', 'username', 'usage'])
-        user_totals = pd.DataFrame(columns=['username', 'total_usage'])
-    finally:
-        if conn:
-            conn.close()
-    
-    # Ensure empty dataframes if no date range and we want to enforce filtering
-    if not (start_date and end_date) and not (daily.empty and user_totals.empty): # if no valid range, but data was fetched (e.g. no WHERE clause)
-        # This logic might need adjustment based on desired behavior for "no allocation selected"
-        # For now, if start_date or end_date is None, we assume data should be filtered to empty
-        # unless the query itself returned empty due to no data in the full table.
-        # The current SQL structure will fetch all if no dates.
-        # Let's enforce empty if dates are not set, meaning an allocation period is required.
-        if start_date is None or end_date is None:
-             daily = pd.DataFrame(columns=['day', 'username', 'usage'])
-             user_totals = pd.DataFrame(columns=['username', 'total_usage'])
+for project_id in project_ids:
+    proj_df = alloc_df[alloc_df["project_id"] == project_id].copy()
+    proj_df["label"] = proj_df.apply(
+        lambda row: f"{row['start']} ~ {row['end']} ({row['hours']:,} core hours)", axis=1
+    )
+    proj_df["value"] = proj_df.apply(
+        lambda row: f"{row['start']}|{row['end']}|{row['hours']}", axis=1
+    )
+    dropdown_options[project_id] = proj_df[["label", "value"]].to_dict("records")
 
+    latest_row = proj_df.sort_values("start").iloc[-1]
+    latest_alloc[project_id] = latest_row["value"]
 
-    return daily, user_totals
+# Precompute alloc used sum
+alloc_used_sum = get_alloc_used_sum()
+today_str = datetime.utcnow().strftime("%Y-%m-%d")
+today = pd.to_datetime(today_str)
 
+active_alloc_df = alloc_df[
+    (pd.to_datetime(alloc_df["start"]) <= today) &
+    (pd.to_datetime(alloc_df["end"]) >= today)
+]
 
-def get_modification_time(db_path):
-    try:
-        mod_time_stamp = os.path.getmtime(db_path)
-        mod_time = datetime.utcfromtimestamp(mod_time_stamp)
-        age_hours = (datetime.now(timezone.utc).replace(tzinfo=None) - mod_time).total_seconds() / 3600
-        return mod_time.strftime("%Y-%m-%d %H:%M:%S"), age_hours
-    except FileNotFoundError:
-        return "N/A", float('inf')
-
-
+# === Dash App ===
 app = dash.Dash(
     __name__,
     external_stylesheets=EXTERNAL_STYLESHEETS,
     requests_pathname_prefix="/dashboard2/",
     routes_pathname_prefix="/dashboard2/",
 )
-server = app.server # For Gunicorn
 
-def create_app_layout():
-    all_allocation_options = get_all_allocations(DB_PATH)
-    initial_selected_value = None
-    if all_allocation_options:
-        # Try to get the ID of the latest allocation to pre-select it
-        latest_alloc_details = get_allocation_details(DB_PATH, None) # None gets latest
-        if latest_alloc_details:
-            initial_selected_value = latest_alloc_details['id']
-        else: # Fallback if latest couldn't be fetched but options exist
-            initial_selected_value = all_allocation_options[0]['value']
+# === Layout ===
+app.layout = html.Div([
+    html.H1("UC Earthquake Engineering Research HPC Utilization", style={"textAlign": "center"}),
 
+    html.Div(f"Last Updated: {mod_time_str} (UTC) (≈ {age_hours:.1f} hours ago)",
+             style={"textAlign": "right", "color": "gray", "fontSize": "14px"}),
 
-    return html.Div([
-        html.H1("UC Earthquake Engineering Research HPC Utilization", style={"textAlign": "center"}),
-        dcc.Dropdown(
-            id='allocation-dropdown',
-            options=all_allocation_options,
-            value=initial_selected_value,
-            clearable=False,
-            style={'width': '50%', 'margin': 'auto', 'marginBottom': '20px'}
-        ),
-        html.Div(id='page-content')
-    ])
-
-app.layout = create_app_layout()
-
-@app.callback(
-    Output('page-content', 'children'),
-    Input('allocation-dropdown', 'value')
-)
-def render_allocation_data(selected_allocation_id):
-    if selected_allocation_id is None:
-        # This case should ideally not happen if dropdown is not clearable and has a value
-        # Or handle by showing a "select an allocation" message
-        latest_alloc = get_allocation_details(DB_PATH, None)
-        if latest_alloc:
-            selected_allocation_id = latest_alloc['id']
-        else:
-            return html.Div("No allocations available or selected.")
-
-    project_info = get_allocation_details(DB_PATH, selected_allocation_id)
-    
-    start_date_filter, end_date_filter = None, None
-    if project_info:
-        start_date_filter = project_info.get('start_date')
-        end_date_filter = project_info.get('end_date')
-    else: # Default/fallback project_info if selected_allocation_id was invalid or db error
-        project_info = {
-            "project_id": "N/A", "hours": 0,
-            "start_date": "N/A", "end_date": "N/A", "id": "N/A"
-        }
-
-    daily_df, user_totals_df = get_data(DB_PATH, start_date_filter, end_date_filter)
-    mod_time_str, age_hours = get_modification_time(DB_PATH)
-
-    total_daily_usage_sum = 0
-    total_usage_x = []
-    total_usage_y = []
-    stacked_user_data = []
-
-    if not daily_df.empty:
-        # Ensure 'usage' column is numeric, coercing errors to NaN, then fillna(0)
-        daily_df['usage'] = pd.to_numeric(daily_df['usage'], errors='coerce').fillna(0)
-        total_daily_usage_sum = daily_df['usage'].sum()
-        
-        # Pivot table for stacked graph
-        pivot_df = daily_df.pivot_table(index="day", columns="username", values="usage", fill_value=0).cumsum()
-        
-        total_usage_grouped_sum = daily_df.groupby("day")["usage"].sum().cumsum()
-        total_usage_x = total_usage_grouped_sum.index
-        total_usage_y = total_usage_grouped_sum.values
-        
-        stacked_user_data = [
-            go.Scatter(
-                x=pivot_df.index,
-                y=pivot_df[user],
-                stackgroup="one",
-                name=user,
-                mode="lines" # Changed from "none" to "lines" for visibility, or "area"
-            ) for user in pivot_df.columns
-        ]
-    else: # daily_df is empty
-        # Ensure pivot_df is an empty DataFrame with expected structure if needed downstream
-        # For now, graph data lists will remain empty.
-        pass
-
-    return html.Div([
-        html.H2("Selected Allocation Details"),
-        html.Ul([
-            html.Li(f"Project ({project_info.get('project_id', 'N/A')}) : "
-                    f"{int(total_daily_usage_sum):,} used / {project_info.get('hours', 0):,} allocated core hours "
-                    f"({project_info.get('start_date', 'N/A')} to {project_info.get('end_date', 'N/A')})", style={"fontSize": "14px"})
-        ]),
-
-        html.Div(f"Database Last Updated: {mod_time_str} (UTC) (≈ {age_hours:.1f} hours ago)",
-                 style={"textAlign": "right", "color": "gray", "fontSize": "14px"}),
-
-        html.H3("Cumulative Usage by All Users (for selected allocation)"),
-        dcc.Graph(
-            id="total-usage-graph",
-            figure={
-                "data": [
-                    go.Scatter(
-                        x=total_usage_x,
-                        y=total_usage_y,
-                        mode="lines+markers",
-                        name="Total Usage"
-                    )
-                ],
-                "layout": go.Layout(
-                    xaxis={"title": "Date"},
-                    yaxis={"title": "Cumulative Core Hours"},
-                    margin={"l": 40, "b": 40, "t": 10, "r": 10},
-                )
-            }
-        ),
-
-        html.H3("Cumulative Usage by Each User (for selected allocation)"),
-        dcc.Graph(
-            id="stacked-user-graph",
-            figure={
-                "data": stacked_user_data,
-                "layout": go.Layout(
-                    xaxis={"title": "Date"},
-                    yaxis={"title": "Cumulative Core Hours"},
-                    showlegend=True
-                )
-            }
-        ),
-
-        html.H4("Total Core Hour Usage by User (for selected allocation)"),
-        dash_table.DataTable(
-            id="user-table",
-            columns=[
-                {"name": "Username", "id": "username"},
-                {"name": "Total Usage (core hours)", "id": "total_usage", "type": "numeric", "format": {"specifier": ",.0f"}}
-            ],
-            data=user_totals_df.to_dict("records") if not user_totals_df.empty else [],
-            style_table={'width': '50%'},
-            style_cell={'textAlign': 'left'},
-            style_header={'backgroundColor': 'lightgrey', 'fontWeight': 'bold'},
+    html.H3("Allocations Overview"),
+    html.Ul([
+        html.Li(
+            f"{row['project_id']}: ({row['start']} ~ {row['end']}) "
+            f"{int(alloc_used_sum[row['project_id'], row['start'], row['end']]):,} used / {row['hours']:,} core hours "
+            f"({alloc_used_sum[row['project_id'], row['start'], row['end']] / row['hours']:.1%})"
         )
-    ])
+        for _, row in active_alloc_df.iterrows()
+    ]),
 
+    html.Hr(),
 
+    # Sections for each project_id dynamically
+    *[
+        html.Div([
+            html.H4(f"{project_id}"),
+            html.Div([
+                html.Label("Select Allocation:"),
+                dcc.Dropdown(
+                    id=f"dropdown-{project_id}",
+                    options=dropdown_options[project_id],
+                    value=latest_alloc[project_id]
+                ),
+            ], style={"width": "50%", "marginBottom": "20px"}),
+
+            html.Div(id=f"fairshare-{project_id}", style={"marginBottom": "10px"}),
+
+            dcc.Graph(id=f"plot-{project_id}"),
+
+            html.H4("User Table"),
+            dash_table.DataTable(
+                id=f"table-{project_id}",
+                columns=[
+                    {"name": "Username", "id": "username"},
+                    {"name": "Total Usage (core hours)", "id": "total_usage", "type": "numeric", "format": {"specifier": ",.0f"}},
+                ],
+                style_table={"width": "50%"},
+                style_cell={"textAlign": "left"},
+                style_header={"backgroundColor": "lightgrey", "fontWeight": "bold"},
+            ),
+            html.Hr(),
+        ])
+        for project_id in project_ids
+    ]
+])
+
+# === Callbacks ===
+for project_id in project_ids:
+    @app.callback(
+        [Output(f"plot-{project_id}", "figure"),
+         Output(f"table-{project_id}", "data"),
+         Output(f"fairshare-{project_id}", "children")],
+        [Input(f"dropdown-{project_id}", "value")]
+    )
+    def update_project_view(selected_value, project_id=project_id):
+        start_date, end_date, hours = selected_value.split("|")
+        hours = int(hours)
+
+        # === Cumulative usage plot ===
+        daily_df = get_daily_user_usage(project_id, start_date, end_date)
+
+        if daily_df.empty:
+            cumulative_df = pd.DataFrame(columns=["day", "username", "cumulative_core_hours"])
+        else:
+            # Full date range
+            today_date = datetime.utcnow().date()
+            effective_end_date = min(datetime.strptime(end_date, "%Y-%m-%d").date(), today_date)
+            full_days = pd.date_range(start=start_date, end=effective_end_date, freq="D")
+
+            # All users present
+            all_users = daily_df["username"].unique().tolist()
+
+            # Prepare full grid DataFrame
+            full_grid = pd.MultiIndex.from_product(
+                [full_days, all_users], names=["day", "username"]
+            ).to_frame(index=False)
+
+            # Merge with actual data
+            daily_df["day"] = pd.to_datetime(daily_df["day"])
+            merged_df = pd.merge(
+                full_grid,
+                daily_df,
+                how="left",
+                on=["day", "username"]
+            )
+            merged_df["core_hours"] = merged_df["core_hours"].fillna(0)
+
+            # Cumulative sum per user
+            merged_df = merged_df.sort_values(["username", "day"])
+            merged_df["cumulative_core_hours"] = merged_df.groupby("username")["core_hours"].cumsum()
+
+            cumulative_df = merged_df
+        
+        fig = go.Figure()
+        for username in cumulative_df["username"].unique():
+            user_df = cumulative_df[cumulative_df["username"] == username]
+            fig.add_trace(go.Scatter(
+                x=user_df["day"],
+                y=user_df["cumulative_core_hours"],
+                mode="lines",
+                name=username,
+                stackgroup="one",
+            ))
+        fig.update_layout(
+            title="Cumulative Usage",
+            xaxis_title="Date",
+            yaxis_title="Cumulative Core Hours",
+            showlegend=True,
+            height=500
+        )
+
+        # === User Table ===
+        user_df = get_user_total_usage(project_id, start_date, end_date)
+        user_table_data = user_df.to_dict("records")
+
+        # === Fairshare
+        fairshare_score, cpu_hours, mem_hours = get_latest_fairshare(project_id)
+        if fairshare_score is None:
+            fairshare_text = "FairShare Effective Usage: N/A"
+        else:
+            fairshare_text = f"FairShare Effective Usage: {fairshare_score:.2%} {interpret_fairshare(fairshare_score)} | CPU Core Hours: {cpu_hours:,.0f} | MEM GB Hours: {mem_hours:,.0f}"
+
+        return fig, user_table_data, fairshare_text
+
+# === Run Server ===
 if __name__ == "__main__":
     app.run_server(host="0.0.0.0", port=5092, debug=False)
+
