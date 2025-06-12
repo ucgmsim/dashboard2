@@ -135,6 +135,23 @@ active_alloc_df = alloc_df[
     (pd.to_datetime(alloc_df["start"]) <= today) &
     (pd.to_datetime(alloc_df["end"]) >= today)
 ]
+# --- FairShare Priority Ranking ---
+# Gather FairShare for each project_id
+project_priority = []
+for project_id in project_ids:
+    fairshare_score, _, _ = get_latest_fairshare(project_id)
+    if fairshare_score is not None:
+        project_priority.append((project_id, fairshare_score))
+    else:
+        project_priority.append((project_id, 1.0))  # If N/A, treat as lowest priority
+
+# Sort in increasing FairShare Effective Usage (lower usage = higher priority)
+project_priority_sorted = sorted(project_priority, key=lambda x: x[1])
+
+# Format as: "uc04357 (0.57%) > nesi00213 (3.36%)"
+priority_text = " > ".join(
+    f"{pid} ({score:.2%})" for pid, score in project_priority_sorted
+)
 
 # === Dash App ===
 app = dash.Dash(
@@ -160,6 +177,12 @@ app.layout = html.Div([
         )
         for _, row in active_alloc_df.iterrows()
     ]),
+    
+
+    # Add section:
+    html.H4("Project Priority based on FairShare Effective Usage"),
+    html.Div("(lower % = higher priority)", style={"fontSize": "12px", "color": "gray", "marginBottom": "5px"}),
+    html.Div(priority_text, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "20px"}),
 
     html.Hr(),
 
