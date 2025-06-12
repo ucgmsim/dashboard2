@@ -136,10 +136,15 @@ active_alloc_df = alloc_df[
     (pd.to_datetime(alloc_df["end"]) >= today)
 ]
 # --- FairShare Priority Ranking ---
+# Precompute FairShare scores
+precomputed_fairshare = {}
+for project_id in project_ids:
+    fairshare_score, cpu_hours, mem_hours = get_latest_fairshare(project_id)
+    precomputed_fairshare[project_id] = (fairshare_score, cpu_hours, mem_hours)
 # Gather FairShare for each project_id
 project_priority = []
 for project_id in project_ids:
-    fairshare_score, _, _ = get_latest_fairshare(project_id)
+    fairshare_score = precomputed_fairshare[project_id][0]
     if fairshare_score is not None:
         project_priority.append((project_id, fairshare_score))
     else:
@@ -290,7 +295,7 @@ for project_id in project_ids:
         user_table_data = user_df.to_dict("records")
 
         # === Fairshare
-        fairshare_score, cpu_hours, mem_hours = get_latest_fairshare(project_id)
+        fairshare_score, cpu_hours, mem_hours = precomputed_fairshare[project_id] 
         if fairshare_score is None:
             fairshare_text = "FairShare Effective Usage: N/A"
         else:
