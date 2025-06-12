@@ -3,7 +3,7 @@ from dash import dcc, html, Input, Output, dash_table
 import plotly.graph_objs as go
 import pandas as pd
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 import os
 
 EXTERNAL_STYLESHEETS = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
@@ -99,11 +99,23 @@ def get_alloc_used_sum():
     conn.close()
     return result
 
-# === File mod time ===
-mod_time_ts = os.path.getmtime(DB_PATH)
-mod_time = datetime.utcfromtimestamp(mod_time_ts).replace(tzinfo=timezone.utc)
-mod_time_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
-age_hours = (datetime.now(timezone.utc) - mod_time).total_seconds() / 3600
+# === DB "data freshness" time ===
+
+def get_latest_update_time():
+    conn = sqlite3.connect(DB_PATH)
+    row = pd.read_sql_query("""
+        SELECT MAX(update_time) AS latest_update_time
+        FROM daily_usage
+    """, conn).squeeze()
+    conn.close()
+
+    # row will be a string like '2025-06-12 21:20:06'
+    if pd.isna(row):
+        return None  # fallback case if DB is empty
+
+    latest_dt = pd.to_datetime(row).tz_localize("UTC")
+    return latest_dt
+
 
 # === Load Allocation Info ===
 alloc_df = get_allocations()
@@ -170,8 +182,9 @@ app = dash.Dash(
 app.layout = html.Div([
     html.H1("UC Earthquake Engineering Research HPC Utilization", style={"textAlign": "center"}),
 
-    html.Div(f"Last Updated: {mod_time_str} (UTC) (≈ {age_hours:.1f} hours ago)",
-             style={"textAlign": "right", "color": "gray", "fontSize": "14px"}),
+    html.Div(id="last-updated-text", style={"textAlign": "right", "color": "gray", "fontSize": "14px"}),
+    # force periodic callback to refresh the Last Updated line
+    dcc.Interval(id="refresh-interval", interval=5*60*1000, n_intervals=0),  # every 5 min
 
     html.H3("Allocations Overview"),
     html.Ul([
@@ -302,6 +315,21 @@ for project_id in project_ids:
             fairshare_text = f"FairShare Effective Usage: {fairshare_score:.2%} {interpret_fairshare(fairshare_score)} | CPU Core Hours: {cpu_hours:,.0f} | MEM GB Hours: {mem_hours:,.0f}"
 
         return fig, user_table_data, fairshare_text
+
+@app.callback(
+    Output("last-updated-text", "children"),
+    Input("refresh-interval", "n_intervals"),
+)
+def update_last_updated_text(n):
+    mod_time = get_latest_update_time()
+    if mod_time is None:
+        mod_time_str = "N/A"
+        age_hours = float("nan")
+    else:
+        mod_time_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
+        age_hours = (datetime.utcnow() - mod_time).total_seconds() / 3600
+
+    return f"Last Updated: {mod_time_str} (UTC) (≈ {age_hours:.1f} hours ago)"
 
 # === Run Server ===
 if __name__ == "__main__":

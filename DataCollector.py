@@ -17,7 +17,7 @@ class DataCollector:
     def run(self, upload: bool = False):
         self.collect_core_hours()
         self.collect_user_core_hours()
-        if self.date == datetime.today().date():
+        if self.date == datetime.utcnow().date():
             self.collect_squeue()
             self.collect_quota()
             self.collect_fairshare()

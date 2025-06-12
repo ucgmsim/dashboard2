@@ -3,7 +3,7 @@ import sqlite3
 from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Union, Optional
-from datetime import datetime, date, timezone
+from datetime import datetime, date
 from contextlib import contextmanager
 
 @dataclass
@@ -130,7 +130,7 @@ class DashboardDB:
             """)
 
     def update_chours_usage(self, daily_ch, total_ch, hpc, project_id, day):
-        update_time = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        update_time = datetime.utcnow().replace(tzinfo=None, microsecond=0)
         with self.get_cursor(self.db_file) as cursor:
             cursor.execute(
                 "INSERT OR REPLACE INTO daily_usage (machine, day, project_id, core_hours_used, total_core_hours, update_time) VALUES (?, ?, ?, ?, ?, ?)",
@@ -138,7 +138,7 @@ class DashboardDB:
             )
 
     def update_user_chours(self, hpc, project_id, entries: Iterable[UserChEntry], day):
-        update_time = datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0)
+        update_time = datetime.utcnow().replace(tzinfo=None, microsecond=0)
         with self.get_cursor(self.db_file) as cursor:
             for entry in entries:
                 cursor.execute(
@@ -178,7 +178,7 @@ class DashboardDB:
                 )
 
     def update_fairshare_status(self, hpc, project_id, day, fairshare_score, cpu_core_hours, mem_gb_hours):
-        update_time = datetime.utcnow()
+        update_time = datetime.utcnow().replace(tzinfo=None, microsecond=0)
         with self.get_cursor(self.db_file) as cursor:
             cursor.execute("""
                 INSERT OR REPLACE INTO fairshare_status

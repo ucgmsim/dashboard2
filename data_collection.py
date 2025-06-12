@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime
 from dashboard_constant import HPC
 from DataCollector import DataCollector
 from DashboardDB import DashboardDB
@@ -9,7 +9,7 @@ from constants import nesi_db_path
 TIME_FORMAT_DATEONLY = "%Y-%m-%d"
 
 def get_today_str():
-    return datetime.now(timezone.utc).strftime(TIME_FORMAT_DATEONLY)
+    return datetime.utcnow().strftime(TIME_FORMAT_DATEONLY)
 
 def main():
     parser = argparse.ArgumentParser(prog="data_collection")
