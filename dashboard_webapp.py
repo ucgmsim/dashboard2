@@ -193,7 +193,7 @@ app.layout = html.Div([
     # Add section:
     html.H4("Project Priority based on FairShare Effective Usage"),
     html.Div("(lower % = higher priority)", style={"fontSize": "12px", "color": "gray", "marginBottom": "5px"}),
-    html.Div(get_fairshare_priority_text(), style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "20px"}),
+    html.Div(id="fairshare-priority-text", style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "20px"}),
 
     html.Hr(),
 
@@ -323,6 +323,13 @@ def update_last_updated_text(n):
         age_hours = (datetime.now(timezone.utc) - mod_time).total_seconds() / 3600
 
     return f"Last Updated: {mod_time_str} (UTC) (≈ {age_hours:.1f} hours ago)"
+
+@app.callback(
+    Output("fairshare-priority-text", "children"),
+    Input("refresh-interval", "n_intervals")
+)
+def update_priority_text(n):
+    return get_fairshare_priority_text()
 
 # === Run Server ===
 if __name__ == "__main__":
