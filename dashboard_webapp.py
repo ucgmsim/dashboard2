@@ -3,7 +3,7 @@ from dash import dcc, html, Input, Output, dash_table
 import plotly.graph_objs as go
 import pandas as pd
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 
 EXTERNAL_STYLESHEETS = ["https://codepen.io/chriddyp/pen/bWLwgP.css"]
@@ -148,27 +148,20 @@ active_alloc_df = alloc_df[
     (pd.to_datetime(alloc_df["end"]) >= today)
 ]
 # --- FairShare Priority Ranking ---
-# Precompute FairShare scores
-precomputed_fairshare = {}
-for project_id in project_ids:
-    fairshare_score, cpu_hours, mem_hours = get_latest_fairshare(project_id)
-    precomputed_fairshare[project_id] = (fairshare_score, cpu_hours, mem_hours)
-# Gather FairShare for each project_id
-project_priority = []
-for project_id in project_ids:
-    fairshare_score = precomputed_fairshare[project_id][0]
-    if fairshare_score is not None:
-        project_priority.append((project_id, fairshare_score))
-    else:
-        project_priority.append((project_id, 1.0))  # If N/A, treat as lowest priority
 
-# Sort in increasing FairShare Effective Usage (lower usage = higher priority)
-project_priority_sorted = sorted(project_priority, key=lambda x: x[1])
+def get_fairshare_priority_text():
+    project_priority = []
+    for project_id in project_ids:
+        fairshare_score, _, _ = get_latest_fairshare(project_id)
+        if fairshare_score is not None:
+            project_priority.append((project_id, fairshare_score))
+        else:
+            project_priority.append((project_id, 1.0))  # fallback for missing
 
-# Format as: "uc04357 (0.57%) > nesi00213 (3.36%)"
-priority_text = " > ".join(
-    f"{pid} ({score:.2%})" for pid, score in project_priority_sorted
-)
+    project_priority_sorted = sorted(project_priority, key=lambda x: x[1])
+    return " > ".join(f"{pid} ({score:.2%})" for pid, score in project_priority_sorted)
+
+
 
 # === Dash App ===
 app = dash.Dash(
@@ -200,7 +193,7 @@ app.layout = html.Div([
     # Add section:
     html.H4("Project Priority based on FairShare Effective Usage"),
     html.Div("(lower % = higher priority)", style={"fontSize": "12px", "color": "gray", "marginBottom": "5px"}),
-    html.Div(priority_text, style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "20px"}),
+    html.Div(get_fairshare_priority_text(), style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "20px"}),
 
     html.Hr(),
 
@@ -308,7 +301,7 @@ for project_id in project_ids:
         user_table_data = user_df.to_dict("records")
 
         # === Fairshare
-        fairshare_score, cpu_hours, mem_hours = precomputed_fairshare[project_id] 
+        fairshare_score, cpu_hours, mem_hours = get_latest_fairshare(project_id) 
         if fairshare_score is None:
             fairshare_text = "FairShare Effective Usage: N/A"
         else:
@@ -327,7 +320,7 @@ def update_last_updated_text(n):
         age_hours = float("nan")
     else:
         mod_time_str = mod_time.strftime("%Y-%m-%d %H:%M:%S")
-        age_hours = (datetime.utcnow() - mod_time).total_seconds() / 3600
+        age_hours = (datetime.now(timezone.utc) - mod_time).total_seconds() / 3600
 
     return f"Last Updated: {mod_time_str} (UTC) (≈ {age_hours:.1f} hours ago)"
 
