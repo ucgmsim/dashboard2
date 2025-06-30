@@ -180,15 +180,8 @@ app.layout = html.Div([
     dcc.Interval(id="refresh-interval", interval=5*60*1000, n_intervals=0),  # every 5 min
 
     html.H3("Allocations Overview"),
-    html.Ul([
-        html.Li(
-            f"{row['project_id']}: ({row['start']} ~ {row['end']}) "
-            f"{int(alloc_used_sum[row['project_id'], row['start'], row['end']]):,} used / {row['hours']:,} core hours "
-            f"({alloc_used_sum[row['project_id'], row['start'], row['end']] / row['hours']:.1%})"
-        )
-        for _, row in active_alloc_df.iterrows()
-    ]),
-    
+    html.Ul(id="alloc-overview"),
+       
 
     # Add section:
     html.H4("Project Priority based on FairShare Effective Usage"),
@@ -330,6 +323,28 @@ def update_last_updated_text(n):
 )
 def update_priority_text(n):
     return get_fairshare_priority_text()
+
+@app.callback(
+    Output("alloc-overview", "children"),
+    Input("refresh-interval", "n_intervals")
+)
+def update_alloc_overview(n):
+    alloc_used_sum = get_alloc_used_sum()
+    today = pd.to_datetime(datetime.utcnow().strftime("%Y-%m-%d"))
+    active_alloc_df = get_allocations()
+    active_alloc_df = active_alloc_df[
+        (pd.to_datetime(active_alloc_df["start"]) <= today) &
+        (pd.to_datetime(active_alloc_df["end"]) >= today)
+    ]
+
+    return [
+        html.Li(
+            f"{row['project_id']}: ({row['start']} ~ {row['end']}) "
+            f"{int(alloc_used_sum[row['project_id'], row['start'], row['end']]):,} used / {row['hours']:,} core hours "
+            f"({alloc_used_sum[row['project_id'], row['start'], row['end']] / row['hours']:.1%})"
+        )
+        for _, row in active_alloc_df.iterrows()
+    ]
 
 # === Run Server ===
 if __name__ == "__main__":
