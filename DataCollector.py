@@ -45,9 +45,9 @@ class DataCollector:
             start_time = f"{date_str}T00:00:00"
             end_time = f"{date_str}T23:59:59"
 
-            # Daily core hours (Added --tres=billing)
+            # Daily core hours - Added -T billing
             daily_cmd = (
-                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours --tres=billing "
+                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours -T billing "
                 f"cluster AccountUtilizationByUser Accounts={project_id} "
                 f"start={start_time} end={end_time} format=Cluster,Accounts,Login%30,Proper,Used"
             )
@@ -59,17 +59,18 @@ class DataCollector:
                 if len(parts) >= 5:
                     try:
                         username = parts[2]
-                        used = float(parts[-1])
+                        # Divide by 5 to convert NeSI "cents" to Compute Units
+                        used = float(parts[-1]) / 5.0
                         if username:  # If user exists in line
                             self.dashboard_db.ensure_user_exists(username, project_id)
                         daily_ch += used
                     except ValueError:
                         continue
 
-            # Total core hours (Added --tres=billing)
+            # Total core hours - Added -T billing
             period_start = self.dashboard_db.get_allocation_start(project_id, self.hpc.value)
             total_cmd = (
-                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours --tres=billing "
+                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours -T billing "
                 f"cluster AccountUtilizationByUser Accounts={project_id} "
                 f"start={period_start} end={end_time} format=Cluster,Accounts,Login%30,Proper,Used"
             )
@@ -80,7 +81,8 @@ class DataCollector:
                 parts = line.split()
                 if len(parts) >= 5 and not parts[2]:  # project summary
                     try:
-                        total_ch = float(parts[-1])
+                        # Divide by 5 to convert NeSI "cents" to Compute Units
+                        total_ch = float(parts[-1]) / 5.0
                     except ValueError:
                         continue
 
@@ -99,9 +101,9 @@ class DataCollector:
             start_time = f"{date_str}T00:00:00"
             end_time = f"{date_str}T23:59:59"
 
-            # User breakdown (Added --tres=billing)
+            # User breakdown - Added -T billing
             user_cmd = (
-                f"/usr/bin/sreport -M {self.hpc.value} -t Hours --tres=billing cluster "
+                f"/usr/bin/sreport -M {self.hpc.value} -t Hours -T billing cluster "
                 f"AccountUtilizationByUser Accounts={project_id} "
                 f"Users={' '.join(users)} start={start_time} end={end_time} "
                 f"-n format=Cluster,Account,Login%30,Proper,Used"
@@ -114,7 +116,8 @@ class DataCollector:
                 if len(parts) >= 5:
                     try:
                         username = parts[2]
-                        used = float(parts[-1])
+                        # Divide by 5 to convert NeSI "cents" to Compute Units
+                        used = float(parts[-1]) / 5.0
                         entries.append(UserChEntry(day=self.date, username=username, core_hours_used=used))
                         self.dashboard_db.ensure_user_exists(username, project_id)
                     except ValueError:
