@@ -108,60 +108,103 @@ def get_latest_update_time():
         FROM daily_usage
     """, conn).squeeze()
     conn.close()
-
+    
     # row will be a string like '2025-06-12 21:20:06'
     if pd.isna(row):
-        return None  # fallback case if DB is empty
+        return None # fallback case if DB is empty
+
 
     latest_dt = pd.to_datetime(row).tz_localize("UTC")
     return latest_dt
 
+# === Layout Function ===
+def serve_layout():
+    # 1. Fetch fresh data every time the page loads
+    alloc_df = get_allocations()
+    project_ids = alloc_df["project_id"].unique().tolist()
 
-# === Load Allocation Info ===
-alloc_df = get_allocations()
-project_ids = alloc_df["project_id"].unique().tolist()
+    dropdown_options = {}
+    latest_alloc = {}
 
-# Dropdown options + default latest per project
-dropdown_options = {}
-latest_alloc = {}
+    for project_id in project_ids:
+        proj_df = alloc_df[alloc_df["project_id"] == project_id].copy()
+        proj_df["label"] = proj_df.apply(
+            lambda row: f"{row['start']} ~ {row['end']} ({row['hours']:,} core hours)", axis=1
+        )
+        proj_df["value"] = proj_df.apply(
+            lambda row: f"{row['start']}|{row['end']}|{row['hours']}", axis=1
+        )
+        dropdown_options[project_id] = proj_df[["label", "value"]].to_dict("records")
 
-for project_id in project_ids:
-    proj_df = alloc_df[alloc_df["project_id"] == project_id].copy()
-    proj_df["label"] = proj_df.apply(
-        lambda row: f"{row['start']} ~ {row['end']} ({row['hours']:,} core hours)", axis=1
-    )
-    proj_df["value"] = proj_df.apply(
-        lambda row: f"{row['start']}|{row['end']}|{row['hours']}", axis=1
-    )
-    dropdown_options[project_id] = proj_df[["label", "value"]].to_dict("records")
+        latest_row = proj_df.sort_values("start").iloc[-1]
+        latest_alloc[project_id] = latest_row["value"]
 
-    latest_row = proj_df.sort_values("start").iloc[-1]
-    latest_alloc[project_id] = latest_row["value"]
+    return html.Div([
+        html.H1("UC Earthquake Engineering Research HPC Utilization", style={"textAlign": "center"}),
 
-# Precompute alloc used sum
-alloc_used_sum = get_alloc_used_sum()
-today_str = datetime.utcnow().strftime("%Y-%m-%d")
-today = pd.to_datetime(today_str)
+        html.Div(id="last-updated-text", style={"textAlign": "right", "color": "gray", "fontSize": "14px"}),
+        dcc.Interval(id="refresh-interval", interval=5*60*1000, n_intervals=0),
 
-active_alloc_df = alloc_df[
-    (pd.to_datetime(alloc_df["start"]) <= today) &
-    (pd.to_datetime(alloc_df["end"]) >= today)
-]
+        html.H3("Allocations Overview"),
+        html.Ul(id="alloc-overview"),
+
+        html.H4("Project Priority based on FairShare Effective Usage"),
+        html.Div("(lower % = higher priority)", style={"fontSize": "12px", "color": "gray", "marginBottom": "5px"}),
+        html.Div(id="fairshare-priority-text", style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "20px"}),
+
+        html.Hr(),
+
+        # Sections for each project_id dynamically
+        *[
+            html.Div([
+                html.H4(f"{project_id}"),
+                html.Div([
+                    html.Label("Select Allocation:"),
+                    dcc.Dropdown(
+                        id=f"dropdown-{project_id}",
+                        options=dropdown_options[project_id],
+                        value=latest_alloc[project_id]
+                    ),
+                ], style={"width": "50%", "marginBottom": "20px"}),
+
+                html.Div(id=f"fairshare-{project_id}", style={"marginBottom": "10px"}),
+
+                dcc.Graph(id=f"plot-{project_id}"),
+
+                html.H4("User Table"),
+                dash_table.DataTable(
+                    id=f"table-{project_id}",
+                    columns=[
+                        {"name": "Username", "id": "username"},
+                        {"name": "Total Usage (core hours)", "id": "total_usage", "type": "numeric", "format": {"specifier": ",.0f"}},
+                    ],
+                    style_table={"width": "50%"},
+                    style_cell={"textAlign": "left"},
+                    style_header={"backgroundColor": "lightgrey", "fontWeight": "bold"},
+                ),
+                html.Hr(),
+            ])
+            for project_id in project_ids
+        ]
+    ])
+
 # --- FairShare Priority Ranking ---
 
 def get_fairshare_priority_text():
+    # We need project_ids here too, fetch them locally
+    alloc_df = get_allocations()
+    local_pids = alloc_df["project_id"].unique().tolist()
+    
     project_priority = []
-    for project_id in project_ids:
+    for project_id in local_pids:
         fairshare_score, _, _ = get_latest_fairshare(project_id)
         if fairshare_score is not None:
             project_priority.append((project_id, fairshare_score))
         else:
-            project_priority.append((project_id, 1.0))  # fallback for missing
+            project_priority.append((project_id, 1.0))
 
     project_priority_sorted = sorted(project_priority, key=lambda x: x[1])
     return " > ".join(f"{pid} ({score:.2%})" for pid, score in project_priority_sorted)
-
-
 
 # === Dash App ===
 app = dash.Dash(
@@ -171,61 +214,17 @@ app = dash.Dash(
     routes_pathname_prefix="/dashboard2/",
 )
 
-# === Layout ===
-app.layout = html.Div([
-    html.H1("UC Earthquake Engineering Research HPC Utilization", style={"textAlign": "center"}),
+# Set the layout to the function (dynamic)
+app.layout = serve_layout
 
-    html.Div(id="last-updated-text", style={"textAlign": "right", "color": "gray", "fontSize": "14px"}),
-    # force periodic callback to refresh the Last Updated line
-    dcc.Interval(id="refresh-interval", interval=5*60*1000, n_intervals=0),  # every 5 min
+# === Register Callbacks ===
+# We need 'project_ids' to register the callbacks at startup.
+# It is okay to fetch this globally once. If a NEW project (not just allocation) is added,
+# you will still need to restart the server, but new allocations for existing projects will work fine.
+global_alloc_df = get_allocations()
+global_project_ids = global_alloc_df["project_id"].unique().tolist()
 
-    html.H3("Allocations Overview"),
-    html.Ul(id="alloc-overview"),
-       
-
-    # Add section:
-    html.H4("Project Priority based on FairShare Effective Usage"),
-    html.Div("(lower % = higher priority)", style={"fontSize": "12px", "color": "gray", "marginBottom": "5px"}),
-    html.Div(id="fairshare-priority-text", style={"fontSize": "18px", "fontWeight": "bold", "marginBottom": "20px"}),
-
-    html.Hr(),
-
-    # Sections for each project_id dynamically
-    *[
-        html.Div([
-            html.H4(f"{project_id}"),
-            html.Div([
-                html.Label("Select Allocation:"),
-                dcc.Dropdown(
-                    id=f"dropdown-{project_id}",
-                    options=dropdown_options[project_id],
-                    value=latest_alloc[project_id]
-                ),
-            ], style={"width": "50%", "marginBottom": "20px"}),
-
-            html.Div(id=f"fairshare-{project_id}", style={"marginBottom": "10px"}),
-
-            dcc.Graph(id=f"plot-{project_id}"),
-
-            html.H4("User Table"),
-            dash_table.DataTable(
-                id=f"table-{project_id}",
-                columns=[
-                    {"name": "Username", "id": "username"},
-                    {"name": "Total Usage (core hours)", "id": "total_usage", "type": "numeric", "format": {"specifier": ",.0f"}},
-                ],
-                style_table={"width": "50%"},
-                style_cell={"textAlign": "left"},
-                style_header={"backgroundColor": "lightgrey", "fontWeight": "bold"},
-            ),
-            html.Hr(),
-        ])
-        for project_id in project_ids
-    ]
-])
-
-# === Callbacks ===
-for project_id in project_ids:
+for project_id in global_project_ids:
     @app.callback(
         [Output(f"plot-{project_id}", "figure"),
          Output(f"table-{project_id}", "data"),
@@ -233,54 +232,58 @@ for project_id in project_ids:
         [Input(f"dropdown-{project_id}", "value")]
     )
     def update_project_view(selected_value, project_id=project_id):
+        if not selected_value:
+             return go.Figure(), [], ""
+             
         start_date, end_date, hours = selected_value.split("|")
-        hours = int(hours)
-
+        
         # === Cumulative usage plot ===
         daily_df = get_daily_user_usage(project_id, start_date, end_date)
 
         if daily_df.empty:
             cumulative_df = pd.DataFrame(columns=["day", "username", "cumulative_core_hours"])
         else:
-            # Full date range
             today_date = datetime.utcnow().date()
             effective_end_date = min(datetime.strptime(end_date, "%Y-%m-%d").date(), today_date)
-            full_days = pd.date_range(start=start_date, end=effective_end_date, freq="D")
+            
+            # Handle case where alloc starts in future
+            if effective_end_date < datetime.strptime(start_date, "%Y-%m-%d").date():
+                 full_days = []
+            else:
+                 full_days = pd.date_range(start=start_date, end=effective_end_date, freq="D")
 
-            # All users present
-            all_users = daily_df["username"].unique().tolist()
+            if len(full_days) > 0:
+                all_users = daily_df["username"].unique().tolist()
+                full_grid = pd.MultiIndex.from_product(
+                    [full_days, all_users], names=["day", "username"]
+                ).to_frame(index=False)
 
-            # Prepare full grid DataFrame
-            full_grid = pd.MultiIndex.from_product(
-                [full_days, all_users], names=["day", "username"]
-            ).to_frame(index=False)
-
-            # Merge with actual data
-            daily_df["day"] = pd.to_datetime(daily_df["day"])
-            merged_df = pd.merge(
-                full_grid,
-                daily_df,
-                how="left",
-                on=["day", "username"]
-            )
-            merged_df["core_hours"] = merged_df["core_hours"].fillna(0)
-
-            # Cumulative sum per user
-            merged_df = merged_df.sort_values(["username", "day"])
-            merged_df["cumulative_core_hours"] = merged_df.groupby("username")["core_hours"].cumsum()
-
-            cumulative_df = merged_df
+                daily_df["day"] = pd.to_datetime(daily_df["day"])
+                merged_df = pd.merge(
+                    full_grid,
+                    daily_df,
+                    how="left",
+                    on=["day", "username"]
+                )
+                merged_df["core_hours"] = merged_df["core_hours"].fillna(0)
+                merged_df = merged_df.sort_values(["username", "day"])
+                merged_df["cumulative_core_hours"] = merged_df.groupby("username")["core_hours"].cumsum()
+                cumulative_df = merged_df
+            else:
+                cumulative_df = pd.DataFrame(columns=["day", "username", "cumulative_core_hours"])
         
         fig = go.Figure()
-        for username in cumulative_df["username"].unique():
-            user_df = cumulative_df[cumulative_df["username"] == username]
-            fig.add_trace(go.Scatter(
-                x=user_df["day"],
-                y=user_df["cumulative_core_hours"],
-                mode="lines",
-                name=username,
-                stackgroup="one",
-            ))
+        if not cumulative_df.empty:
+            for username in cumulative_df["username"].unique():
+                user_df = cumulative_df[cumulative_df["username"] == username]
+                fig.add_trace(go.Scatter(
+                    x=user_df["day"],
+                    y=user_df["cumulative_core_hours"],
+                    mode="lines",
+                    name=username,
+                    stackgroup="one",
+                ))
+        
         fig.update_layout(
             title="Cumulative Usage",
             xaxis_title="Date",
@@ -331,6 +334,7 @@ def update_priority_text(n):
 def update_alloc_overview(n):
     alloc_used_sum = get_alloc_used_sum()
     today = pd.to_datetime(datetime.utcnow().strftime("%Y-%m-%d"))
+    # Fetch FRESH allocation info inside the callback
     active_alloc_df = get_allocations()
     active_alloc_df = active_alloc_df[
         (pd.to_datetime(active_alloc_df["start"]) <= today) &
@@ -340,8 +344,8 @@ def update_alloc_overview(n):
     return [
         html.Li(
             f"{row['project_id']}: ({row['start']} ~ {row['end']}) "
-            f"{int(alloc_used_sum[row['project_id'], row['start'], row['end']]):,} used / {row['hours']:,} core hours "
-            f"({alloc_used_sum[row['project_id'], row['start'], row['end']] / row['hours']:.1%})"
+            f"{int(alloc_used_sum.get((row['project_id'], row['start'], row['end']), 0)):,} used / {row['hours']:,} core hours "
+            f"({alloc_used_sum.get((row['project_id'], row['start'], row['end']), 0) / row['hours']:.1%})"
         )
         for _, row in active_alloc_df.iterrows()
     ]
@@ -349,4 +353,3 @@ def update_alloc_overview(n):
 # === Run Server ===
 if __name__ == "__main__":
     app.run_server(host="0.0.0.0", port=5092, debug=False)
-

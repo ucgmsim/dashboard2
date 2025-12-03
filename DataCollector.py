@@ -45,9 +45,9 @@ class DataCollector:
             start_time = f"{date_str}T00:00:00"
             end_time = f"{date_str}T23:59:59"
 
-            # Daily core hours
+            # Daily core hours (Added --tres=billing)
             daily_cmd = (
-                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours "
+                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours --tres=billing "
                 f"cluster AccountUtilizationByUser Accounts={project_id} "
                 f"start={start_time} end={end_time} format=Cluster,Accounts,Login%30,Proper,Used"
             )
@@ -66,10 +66,10 @@ class DataCollector:
                     except ValueError:
                         continue
 
-            # Total core hours
+            # Total core hours (Added --tres=billing)
             period_start = self.dashboard_db.get_allocation_start(project_id, self.hpc.value)
             total_cmd = (
-                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours "
+                f"/usr/bin/sreport -M {self.hpc.value} -n -t Hours --tres=billing "
                 f"cluster AccountUtilizationByUser Accounts={project_id} "
                 f"start={period_start} end={end_time} format=Cluster,Accounts,Login%30,Proper,Used"
             )
@@ -99,8 +99,9 @@ class DataCollector:
             start_time = f"{date_str}T00:00:00"
             end_time = f"{date_str}T23:59:59"
 
+            # User breakdown (Added --tres=billing)
             user_cmd = (
-                f"/usr/bin/sreport -M {self.hpc.value} -t Hours cluster "
+                f"/usr/bin/sreport -M {self.hpc.value} -t Hours --tres=billing cluster "
                 f"AccountUtilizationByUser Accounts={project_id} "
                 f"Users={' '.join(users)} start={start_time} end={end_time} "
                 f"-n format=Cluster,Account,Login%30,Proper,Used"
